@@ -1,0 +1,503 @@
+---
+
+author: "J. Greene"
+date: "14/05/2021"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Loading and Merging Data
+
+First, I will create an empty list file for merging datasets.
+
+```{r df}
+library(dplyr)
+files <- list.files(pattern = "file_.*csv")
+df_list <- lapply(files, read.csv)
+df <- bind_rows(df_list)
+```
+
+Load data into empty list.
+
+```{r}
+data1 <- read.csv("aibl_apoeres_01-Jun-2018.csv")
+data2 <- read.csv("aibl_cdr_01-Jun-2018.csv")
+data3 <- read.csv("aibl_labdata_01-Jun-2018.csv")
+data4 <- read.csv("aibl_medhist_01-Jun-2018.csv")
+data5 <- read.csv("aibl_mmse_01-Jun-2018.csv")
+data6 <- read.csv("aibl_neurobat_01-Jun-2018.csv")
+data7 <- read.csv("aibl_pdxconv_01-Jun-2018.csv")
+data8 <- read.csv("aibl_ptdemog_01-Jun-2018.csv")
+```
+
+Merge data.
+
+```{r}
+data_merged <- merge(data1, data2, all.x = TRUE, all.y = TRUE)
+data_merged2 <- merge(data_merged, data3, all.x = TRUE, all.y = TRUE)
+data_merged3 <- merge(data_merged2, data4, all.x = TRUE, all.y = TRUE)
+data_merged4 <- merge(data_merged3, data5, all.x = TRUE, all.y = TRUE)
+data_merged5 <- merge(data_merged4, data6, all.x = TRUE, all.y = TRUE)
+data_merged6 <- merge(data_merged5, data7, all.x = TRUE, all.y = TRUE)
+df <- merge(data_merged6, data8, all.x = TRUE, all.y = TRUE)
+```
+
+## Dividing outcome and predictor variables
+
+Changing multiclass into binary class problem (Healthy and non-healthy).
+
+```{r}
+df$DXCURREN[df$DXCURREN == 3] <- 2
+```
+
+Removing cases with DXCURREN data missing as it cannot be imputed.
+
+```{r}
+df <- df[ !(df$RID %in% c(1175, 1460, 1463, 1515)), ]
+```
+
+## Cleaning and imputing data
+
+Checking for NA values and outliers.
+
+```{r}
+summary(df)
+```
+Considering the NA values are uniform across variables, we can identify that the trend comes from non-bl classes found in the 'VISCODE' variable. Furthermore, for the purpose of this coursework, we are asked to focus on bl data only.
+
+Removing all non-bl data.
+
+```{r}
+df <- subset(df, df$VISCODE == "bl")
+complete.cases(df) #checking that all NA values are removed
+```
+
+Now that all cases are bl-only, we can remove the 'VISCODE' variable as well as other redundant variables such as 'RID' and 'SITEID'.
+
+```{r}
+df <- subset(df, select = -VISCODE)
+df <- subset(df, select = -RID)
+df <- subset(df, select = -SITEID)
+```
+
+Creating variable 'AGE' as an extra demographic. This will be based on their age during the time of their first examination found in the 'EXAMDATE' variable. Keep in mind, this will not be an exact age as some patients took their other exam, 'APTESTDT' at a different time, but those exceptions are within 12 months difference. Furthermore, there are more missing values (denoted as -4) in the 'APTESTDT' variable. 
+
+```{r}
+x <- df$EXAMDATE
+y <- df$PTDOB
+x <- sub('......', '',x)
+y <- sub('.', '',y)
+x_num <- as.numeric(x)
+y_num <- as.numeric(y)
+AGE <- x_num - y_num
+```
+
+Filling in missing values in 'AGE' with median(AGE).
+
+```{r}
+median(AGE) #73
+AGE[533] <- 73
+AGE[769] <- 73
+df$AGE <- AGE
+```
+
+With the 'AGE' variable created, we can remove the 'APTESTDT', 'EXAMDATE' and 'PTDOB' variables.
+
+```{r}
+df <- subset(df, select = -EXAMDATE)
+df <- subset(df, select = -APTESTDT)
+df <- subset(df, select = -PTDOB)
+```
+
+
+
+## Using missFOREST to impute -4 values
+
+```{r}
+library(missForest)
+df.mis <- df
+df.mis$DXCURREN<- as.factor(df.mis$DXCURREN)
+df.mis[df.mis < 0] <- NA
+```
+
+
+
+
+
+```{r}
+## Now let us impute missing values in iris.mis. Use 'verbose' to see what happens during iterations:
+df.imp <- missForest(df.mis, xtrue = df, verbose = TRUE)
+
+## The final results can be accessed directly. The estimated error:
+df.imp$OOBerror
+
+## The true imputation error (if true data available):
+df.imp$error
+
+## After running the above instructions, find out when the imputation is finished and what the final true normalized root mean squared error (NRMSE) and the proportion of falsely classified are. Also find the estimated final NRMSE  and the PFC. Please see which which iteration is used final value.
+
+
+#you may also like to investigate errors if the true data values are not specified.
+df.imp <- missForest(df.mis,  verbose = TRUE)
+
+## The final results can be accessed directly. The estimated error:
+df.imp$OOBerror
+
+## The true imputation error (if true data available):
+df.imp$error
+
+## And of course the imputed data matrix (you do not have to run this):
+summary(df.imp$ximp)
+```
+
+
+
+```{r}
+test_df<-df.imp$ximp
+set.seed(71)
+rf <-randomForest(DXCURREN~.,data=test_df,ntree=500)
+
+#Predicting the Test set results.
+y_pred = predict(rf, newdata = test_df)
+
+# install.packages('MLmetrics')
+library(MLmetrics)
+# Making the Confusion Matrix
+(cm = ConfusionMatrix(y_pred, df$DXCURREN))
+(Classification.Accuracy <- 100*Accuracy(y_pred, df$DXCURREN))
+
+df2 <- test_df #saving for SMOTE
+
+#Let us see the performance when true iris data is classified.
+test_df<-df
+test_df$DXCURREN<- as.factor(test_df$DXCURREN)
+set.seed(71)
+rf <-randomForest(DXCURREN~.,data=test_df,ntree=500)
+#Predicting the Test set results.
+y_pred = predict(rf, newdata = test_df)
+# install.packages('MLmetrics')
+library(MLmetrics)
+# Making the Confusion Matrix
+(cm = ConfusionMatrix(y_pred, df$DXCURREN))
+(Classification.Accuracy <- 100*Accuracy(y_pred, df$DXCURREN))
+```
+test_df had 100% accuracy in predicting DXCURREN outcome when replacing -4 values with imputation.
+
+
+
+
+
+
+
+
+## Addressing class imbalance with 'smotefamily' package
+
+
+
+```{r}
+df3 <- df2
+df3$DXCURREN = as.numeric(df3$DXCURREN)
+df3$PTGENDER=as.numeric(df3$PTGENDER)
+df3$APGEN1=as.numeric(df3$APGEN1)
+df3$APGEN2=as.numeric(df3$APGEN2)
+df3$MHPSYCH=as.numeric(df3$MHPSYCH)
+df3$MH2NEURL=as.numeric(df3$MH2NEUR)
+df3$MH4CARD=as.numeric(df3$MH4CARD)
+df3$MH8MUSCL=as.numeric(df3$MH8MUSCL)
+df3$MH9ENDO=as.numeric(df3$MH9ENDO)
+df3$MH6HEPAT=as.numeric(df3$MH6HEPAT)
+df3$MH10GAST=as.numeric(df3$MH10GAST)
+df3$MH12RENA=as.numeric(df3$MH12RENA)
+df3$MH16SMOK=as.numeric(df3$MH16SMOK)
+df3$MH17MALI=as.numeric(df3$MH17MALI)
+df3$MMSCORE=as.numeric(df3$MMSCORE)
+df3$LIMMTOTAL=as.numeric(df3$LIMMTOTAL)
+df3$LDELTOTAL=as.numeric(df3$LDELTOTAL)
+df3$CDGLOBAL=as.numeric(df3$CDGLOBAL)
+```
+
+
+
+Before splitting the data for training/testing, we should identify if there is a class imbalance and use SMOTE to remove majority class bias.
+
+```{r}
+# Check for class imbalance
+table(df3$DXCURREN)
+
+#We know from looking at the dataframe, DXCURREN is 3rd last from the variable list since adding AGE
+library(smotefamily)
+balanced_df <- SMOTE(df3[-29],  # feature values
+              as.numeric(df3$DXCURREN),  # ensure it's numeric for balancing
+              K = 2, dup_size = 1)  # function parameters
+
+#table(as.factor(balanced_df[31]))
+str(balanced_df)
+library(dplyr)
+df3 <- bind_cols(balanced_df$data[31], balanced_df$data[-31])
+str(df3)
+
+# Make dependent variable as a factor (categorical).
+df3$class = as.factor(df3$class)
+
+#Setting label
+names(df3)[1]<- "DXCURREN"
+
+# Check types of variables and class sizes.
+str(df3)
+table(df3$DXCURREN)
+
+# Splitting the dataset into the Training set and Test set
+library(caTools)
+set.seed(71)
+split = sample.split(df3$DXCURREN, SplitRatio = 0.7)
+training_mydata = subset(df3, split == TRUE)
+test_mydata = subset(df3, split == FALSE)
+```
+
+Now that we have more balanced classes, we can split and train/test the data.
+
+However, we need to round our values from missFOREST output to the nearest integer and change 'DXCURREN' back to factor.
+
+```{r}
+#df3$DXCURREN <- is.numeric(df3$DXCURREN)
+
+#df3$DXCURREN <- floor(df3$DXCURREN)
+df3$PTGENDER <- floor(df3$PTGENDER)
+df3$APGEN1 <- floor(df3$APGEN1)
+df3$APGEN2 <- floor(df3$APGEN2)
+df3$MHPSYCH <- floor(df3$MHPSYCH)
+df3$MH2NEURL <- floor(df3$MH2NEUR)
+df3$MH4CARD <- floor(df3$MH4CARD)
+df3$MH8MUSCL <- floor(df3$MH8MUSCL)
+df3$MH9ENDO <- floor(df3$MH9ENDO)
+df3$MH6HEPAT <- floor(df3$MH6HEPAT)
+df3$MH10GAST <- floor(df3$MH10GAST)
+df3$MH12RENA <- floor(df3$MH12RENA)
+df3$MH16SMOK <- floor(df3$MH16SMOK)
+df3$MH17MALI <- floor(df3$MH17MALI)
+df3$MMSCORE <- floor(df3$MMSCORE)
+df3$LIMMTOTAL <- floor(df3$LIMMTOTAL)
+df3$LDELTOTAL <- floor(df3$LDELTOTAL)
+df3$CDGLOBAL <- floor(df3$CDGLOBAL)
+
+#df3$DXCURREN <- is.factor(df3$DXCURREN)
+```
+
+```{r}
+library(caret)
+set.seed(71)
+control <- trainControl(method="repeatedcv", number=10, repeats=3)
+# train the model
+model <- train(DXCURREN~., data=df3, method="lvq", preProcess="scale", trControl=control)
+# estimate variable importance
+importance <- varImp(model, scale=FALSE)
+# summarize importance
+print(importance)
+# plot importance
+plot(importance)
+
+#feature selection 
+control <- rfeControl(functions=rfFuncs, method="cv", number=10)
+# run the RFE algorithm
+results <- rfe(df[,1:8], df[,9], sizes=c(1:8), rfeControl=control)
+# summarize the results
+print(results)
+# list the chosen features
+predictors(results)
+# plot the results
+plot(results, type=c("g", "o"))
+```
+
+RMSE suggests 5 variables to be used in model. Top 5 from Importance graph will be considered for PCA
+
+
+## Model Building
+
+```{r}
+library(randomForest)
+
+
+set.seed(71) 
+mtry <- tuneRF(training_mydata[-1],training_mydata$DXCURREN, ntreeTry=500,
+               stepFactor=1.5,improve=0.01, trace=TRUE, plot=TRUE)
+best.m <- mtry[mtry[, 2] == min(mtry[, 2]), 1]
+
+print(mtry)
+print(best.m)
+
+set.seed(71)
+rf <-randomForest(DXCURREN~.,data=training_mydata, mtry=best.m, importance=TRUE,ntree=500)
+print(rf)
+plot(rf)
+#In the rf plot, the red curve represents the Error for the class 0 and the green curve represents the Error for the class 1. The OOB error is represented by the black curve. 
+
+#Evaluate variable importance
+importance(rf)
+varImpPlot(rf)
+```
+
+Contrastingly, RF shows with training data that it's the most important variable in explaining DXCURREN outcome
+
+```{r}
+#Step III: Evaluate the classifier on the test data. 
+#--------------------------------------------------
+
+#Predicting the Test set results.
+y_pred = predict(rf, newdata = test_mydata)
+
+# install.packages('MLmetrics')
+library(MLmetrics)
+# Making the Confusion Matrix
+(cm = ConfusionMatrix(y_pred, test_mydata$DXCURREN))
+
+(Classification.Accuracy <- 100*Accuracy(y_pred, test_mydata$DXCURREN))
+
+
+#Predict and Calculate Performance Metrics.
+
+#Prediction and Calculate Performance Metrics
+pred1=predict(rf,newdata = test_mydata,type = "prob")
+
+library(ROCR)
+perf = prediction(pred1[,2], test_mydata$DXCURREN)
+
+# 0. Accuracy.
+acc = performance(perf, "acc")
+plot(acc,main="Accurcay Curve for Random Forest",col=2,lwd=2)
+
+# 1. Area under curve
+auc = performance(perf, "auc")
+auc@y.values[[1]]
+
+# 2. True Positive and Negative Rate
+pred3 = performance(perf, "tpr","fpr")
+
+# 3. Plot the ROC curve
+plot(pred3,main="ROC Curve for Random Forest",col=2,lwd=2)
+abline(a=0,b=1,lwd=2,lty=2,col="gray")
+```
+
+Testing the model when removing CDGLOBAL
+
+```{r}
+df_cd <- subset(df3, select = -CDGLOBAL)
+
+set.seed(71) 
+split = sample.split(df_cd$DXCURREN, SplitRatio = 0.7)
+training_mydata2 = subset(df_cd, split == TRUE)
+test_mydata2 = subset(df_cd, split == FALSE)
+mtry2 <- tuneRF(training_mydata2[-1],training_mydata2$DXCURREN, ntreeTry=500,
+               stepFactor=1.5,improve=0.01, trace=TRUE, plot=TRUE)
+best.m2 <- mtry2[mtry2[, 2] == min(mtry2[, 2]), 1]
+
+print(mtry2)
+print(best.m2)
+
+#Apply random forest (rf) with the optimal value of mtry.
+set.seed(71)
+rf_without_CDGLOBAL <-randomForest(DXCURREN~.,data=training_mydata2, mtry2=best.m2, importance=TRUE,ntree=500)
+print(rf_without_CDGLOBAL)
+plot(rf_without_CDGLOBAL)
+#In the rf plot, the red curve represents the Error for the class 0 and the green curve represents the Error for the class 1. The OOB error is represented by the black curve. 
+
+#Evaluate variable importance
+importance(rf_without_CDGLOBAL)
+varImpPlot(rf_without_CDGLOBAL)
+```
+```{r}
+y_pred2 = predict(rf_without_CDGLOBAL, newdata = test_mydata2)
+
+(cm2 = ConfusionMatrix(y_pred2, test_mydata2$DXCURREN))
+
+(Classification.Accuracy2 <- 100*Accuracy(y_pred2, test_mydata2$DXCURREN))
+
+
+pred2=predict(rf_without_CDGLOBAL,newdata = test_mydata2,type = "prob")
+
+library(ROCR)
+perf2 = prediction(pred2[,2], test_mydata2$DXCURREN)
+
+
+acc2 = performance(perf2, "acc")
+plot(acc2,main="Accurcay Curve for Random Forest Without CDGLOBAL",col=2,lwd=2)
+
+
+auc2 = performance(perf2, "auc")
+auc@y.values[[1]]
+
+
+pred3 = performance(perf2, "tpr","fpr")
+
+
+plot(pred3,main="ROC Curve for Random Forest Without CDGLOBAL",col=2,lwd=2)
+abline(a=0,b=1,lwd=2,lty=2,col="gray")
+```
+
+6.3% Accuracy lost with CDGLOBAL removed 
+
+##PCA Model
+
+```{r}
+
+df_import <- df3[c(4,21,27:29)]
+
+df.pca <- prcomp(df_import, scale = TRUE)
+summary(df.pca)
+
+#as by default loadings in R are computed in negative direction, this is corrected below.
+df.pca$rotation<- -df.pca$rotation
+df.pca$x<- -df.pca$x
+
+
+#The prcomp function also outputs the standard deviation of each principal component.
+df.pca$sdev
+
+#The variance explained by each principal component is obtained by squaring these values:
+(VE <- df.pca$sdev^2)
+
+#To compute the proportion of variance explained by each principal component, we simply divide the variance explained by each principal component by the total variance explained by all four principal components:
+PVE <- VE / sum(VE)
+round(PVE, 2)
+
+
+library(gridExtra)
+PVEplot <- qplot(c(1:5), PVE) + 
+  geom_line() + 
+  xlab("Principal Component") + 
+  ylab("PVE") +
+  ggtitle("Scree Plot") +
+  ylim(0, 1)
+
+# Cumulative PVE plot
+cumPVE <- qplot(c(1:5), cumsum(PVE)) + 
+  geom_line() + 
+  xlab("Principal Component") + 
+  ylab(NULL) + 
+  ggtitle("Cumulative Scree Plot") +
+  ylim(0,1)
+
+grid.arrange(PVEplot, cumPVE, ncol = 2)
+
+library(devtools) 
+library(ggbiplot)
+
+g <- ggbiplot(df.pca, obs.scale = 1, var.scale = 1, groups = df3$DXCURREN, ellipse = TRUE, circle = F, ellipse.prob=0.65)
+g <- g + scale_color_discrete(name = '')
+g <- g + theme(legend.direction = 'horizontal', legend.position = 'top')
+print(g)
+
+#Correlation between PCs.
+PCcor=cor(df.pca$x)
+#Correlation plot.
+library(corrplot)
+corrplot(PCcor, order="hclust")
+#Scatter plot.
+ggplot(df_import, aes(x=df.pca$x[,1], y=df.pca$x[,2]))+geom_point()
+
+```
+
